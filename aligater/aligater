@@ -1,0 +1,153 @@
+#!/usr/bin/env perl
+#
+#  Author: Tim Sterne-Weiler (Oct 2014)
+#  e-mail: tim.sterne.weiler@utoronto.ca
+#
+
+#  Main executable to call sub-tools
+
+use warnings;
+use strict;
+
+use Cwd qw(abs_path);
+
+# INITIALIZE
+my $path = abs_path($0);
+$0 =~ s/^.*\///;
+$path =~ s/\/$0$//;
+
+use FindBin;
+use lib "$FindBin::Bin/lib";
+
+use SamBasics qw(:all);
+use FuncBasics qw(openFileHandle sumOfHash);
+
+use Scalar::Util qw(looks_like_number);
+
+use Getopt::Long;
+
+our $EXIT_STATUS = 0;
+
+# basic flag vars
+my $helpFlag = 0;
+my $verboseFlag = 0;
+
+my $alignThreads = 1;
+my $alignProg = "bowtie2";
+my $align_k = 50; # default as of 8/10/15
+my $align_a = 0;
+
+# Tried doing the following, but it made no difference
+# (JPK, 01/17/2019):
+#my $alignVerySensLocal = "-R 3 -N 1 -L 16 -i S,1,0.50";
+my $scoreMinRevised; #"L,20,0.25" # (= 20 + 0.25*read_length)
+
+my $alignVerySensLocal = "-R 3 -N 0 -i S,1,0.50";
+my $alignLength = "16";
+my $alignBasicFlags = "--local --reorder";
+
+my $logFile = "out.log"; #default log.
+
+my $bamFormat = 0; # SAM INPUT/OUTPUT = 0
+		   # BAM INPUT/OUTPUT = 1
+
+my $alignDB;
+
+Getopt::Long::Configure("pass_through", "no_auto_abbrev");
+GetOptions("bam" => \$bamFormat,
+           "x=s" => \$alignDB,
+           "p=i" => \$alignThreads,
+           "a" => \$align_a,
+           "k=i" => \$align_k,
+           "score=s" => \$scoreMinRevised,
+           "L=i" => \$alignLength,
+	   "help|h" => \$helpFlag,
+	   "verbose|v" => \$verboseFlag);
+
+$align_k = ($align_a) ? "-a" : "-k $align_k";
+my $alignFlags = "-p $alignThreads $align_k $alignVerySensLocal $alignBasicFlags";
+
+if(defined($scoreMinRevised)) {
+  $alignFlags = "-p $alignThreads $align_k $alignVerySensLocal $alignBasicFlags -L $alignLength --score-min $scoreMinRevised";
+}
+
+my $printUsage = 0;
+
+my $subCommand = shift @ARGV;
+
+if(!defined($subCommand) or
+   (defined($subCommand) and $subCommand eq "align" and 
+	(!defined($alignDB) or
+         !defined($ARGV[0]) or 
+         $ARGV[0] !~ /\.(fq|fastq|fa|fasta)(\.gz)*$/))
+   ) {
+  $printUsage = 1;
+}
+
+if(($helpFlag or $printUsage) and (!defined($subCommand) or $subCommand !~ /align|detect|post|reclass|stats|table/)) {
+  if(defined($subCommand) and $subCommand eq "align") {
+    die "Usage: $0 align [options] -x <bowtie2_db> input.[fq|fa][.gz] > output.[sam|bam]
+    ";
+  } else {
+    die "Usage: aligater [sub-command] [-h]
+         - align   : align short-reads to transcriptome
+         - detect  : detect chimeric reads by recursive chaining of transcriptome SAM blocks
+         - post    : post-process LIG format files with BLAST or RACTIP
+         - reclass : create 2D k-mer db and reclassify chimeras using heirarchical type
+         - stats   : compare crosslinked to mock-treated samples using multinomial statistics
+         - table   : compile interaction results into tabular format 
+    ";
+  }
+}
+
+sub reverb {
+  my $str = shift;
+  chomp $str;
+  if($verboseFlag) {
+    print STDERR "[$0]: $str\n";
+  }
+}
+
+if($subCommand eq "align") {
+  my $inputFlag;
+
+  if($ARGV[0] =~ /\.(fq|fastq)/) {
+    $inputFlag = "-q ";
+  } elsif ($ARGV[0] =~ /\.(fa|fasta)/) {
+    $inputFlag = "-f ";
+  } else {
+    die "Input error: $ARGV[0]\n";
+  }
+
+  $inputFlag = ($ARGV[0] =~ /\.gz$/) ? "<(gzip -dc $ARGV[0])" : "$ARGV[0]";
+
+  my $outCmd = ($bamFormat) ? "| samtools view -bS -" : ""; 
+  system("bash", "-c", "which $alignProg > /dev/null 2> /dev/null") and
+	die "[aligater]: Cannot find $alignProg which is required!\n";
+  system("bash", "-c", "$alignProg $alignFlags -x $alignDB $inputFlag $outCmd 2> $logFile") and 
+	die "[aligater]: Alignment failed! Please check the log file ($logFile)!";
+} elsif($subCommand eq "detect") {
+  # pipe to bam reader
+  my $samtoolsCmd = ($bamFormat) ? "| samtools view -h -" : "";  
+  open(DETECT, "$samtoolsCmd | $path/bin/detect.pl @ARGV");
+  while(<STDIN>) {
+    print DETECT;
+  }
+  close DETECT;
+} elsif($subCommand eq "post") {
+  open(POST, "| $path/bin/post.pl -p $alignThreads @ARGV");
+  while(<STDIN>) {
+    print POST;
+  }
+  close POST;
+} elsif($subCommand =~ /reclass|stats|table/) {
+  system("bash", "-c", "which julia > /dev/null 2> /dev/null") and
+        die "[aligater]: Please download/install 'julia' to path!\n";
+  my $juliaver = `julia --version`;
+  $juliaver =~ /0.4.\d/ or die "[aligater]: julia version must be 0.4.X!\n";  
+  system("bash", "-c", "$path/bin/$subCommand.jl @ARGV");
+}
+
+exit $EXIT_STATUS >> 8;
+
+__END__
