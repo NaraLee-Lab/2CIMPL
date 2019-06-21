@@ -1,9 +1,0 @@
-chr	-	PB2	1	0	2341	chr4
-chr	-	PB1	2	0	2341	chr6
-chr	-	PA	3	0	2233	chr8
-chr	-	HA	4	0	1775	chr17
-chr	-	NP	5	0	1565	chr12
-chr	-	NA	6	0	1409	chr14
-chr	-	M	7	0	1027	chr16
-chr	-	NS	8	0	890	chr19
-
